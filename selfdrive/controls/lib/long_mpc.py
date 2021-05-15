@@ -61,7 +61,7 @@ class LongitudinalMpc():
     self.cur_state[0].v_ego = v
     self.cur_state[0].a_ego = a
 
-  def update(self, CS, lead):
+  def update(self, CS, lead, TR_override=None):
     v_ego = CS.vEgo
 
     # Setup current mpc state
@@ -96,7 +96,10 @@ class LongitudinalMpc():
       a_lead = 0.0
       self.a_lead_tau = _LEAD_ACCEL_TAU
 
-    TR = self.dynamic_follow.update(CS, self.libmpc)  # update dynamic follow
+    if TR_override:
+      TR = TR_override
+    else:
+      TR = self.dynamic_follow.update(CS, self.libmpc)  # update dynamic follow
 
     # Calculate mpc
     t = sec_since_boot()
