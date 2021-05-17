@@ -1,5 +1,12 @@
+from datetime import datetime
+from enum import Enum
 import os
 import math
+from threading import Thread
+from queue import Full, Queue
+import struct
+import subprocess
+import time
 
 import cereal.messaging as messaging
 from selfdrive.swaglog import cloudlog
@@ -12,8 +19,85 @@ from selfdrive.controls.lib.dynamic_follow import DynamicFollow
 LOG_MPC = os.environ.get('LOG_MPC', False)
 
 
+class InputEvent(Enum):
+  SHORT_PRESS = 1
+  LONG_PRESS = 2
+
+
+def input_loop(input_queue):
+  log_f = open('/data/openpilot-patch/input_log.txt', 'a')
+
+  try:
+    button_file = open('/dev/input/event0', 'rb')
+    is_pressed = None
+    state_change_time = time.monotonic()
+
+    short_press_range = (0.7, 2.)
+    long_press_range = (3., 5.)
+
+    while True:
+      button_data = button_file.read(24)
+      button_fields = struct.unpack('4IHHI', button_data)
+      if button_fields[5] != 114: # Volume down
+        continue
+      new_state_change_time = time.monotonic()
+      time_in_state = new_state_change_time - state_change_time
+      new_is_pressed = button_fields[6] == 1
+
+      if is_pressed is None:
+        pass
+      elif not is_pressed and new_is_pressed:
+        pass
+      elif is_pressed and not new_is_pressed:
+        # TODO: remove inline dims
+        if short_press_range[0] <= time_in_state <= short_press_range[1]:
+          input_queue.put(InputEvent.SHORT_PRESS)
+          dim(1.0)
+        elif long_press_range[0] <= time_in_state <= long_press_range[1]:
+          input_queue.put(InputEvent.LONG_PRESS)
+          dim(3.0)
+      else: # Two pressed or two depressed events in a row
+        log_f.write(f"{datetime.now()} is_pressed:{is_pressed} new_is_pressed:{new_is_pressed} duration:{time_in_state}\n")
+        log_f.flush()
+      is_pressed = new_is_pressed
+      state_change_time = new_state_change_time
+  except Exception as e:
+    log_f.write(f"{datetime.now()} Input loop exception: {e}\n")
+    log_f.flush()
+    subprocess.Popen(['python', '/data/openpilot-patch/util/error.py'])
+
+
+class OutputEvent(Enum):
+  SHORT_DIM = 1
+  LONG_DIM = 2
+
+def dim(duration):
+  brightness_path = '/sys/class/leds/lcd-backlight/brightness'
+  with open(brightness_path, 'w') as brightness_f:
+    brightness_f.write('63')
+  time.sleep(duration)
+  with open(brightness_path, 'w') as brightness_f:
+    brightness_f.write('127')
+
+
+def output_loop(output_queue):
+  log_f = open('/data/openpilot-patch/output_log.txt', 'a')
+
+  try:
+    while True:
+      output_event = output_queue.get(block=True)
+      if output_event == OutputEvent.SHORT_DIM:
+        dim(1.0)
+      elif output_event == OutputEvent.LONG_DIM:
+        dim(3.0)
+  except Exception as e:
+    log_f.write(f"{datetime.now()} Output loop exception: {e}\n")
+    log_f.flush()
+    subprocess.Popen(['python', '/data/openpilot-patch/util/error.py'])
+
+
 class LongitudinalMpc():
-  def __init__(self, mpc_id):
+  def __init__(self, mpc_id, TR_override=None):
     self.mpc_id = mpc_id
 
     self.dynamic_follow = DynamicFollow(mpc_id)
@@ -29,6 +113,16 @@ class LongitudinalMpc():
     self.last_cloudlog_t = 0.0
     self.n_its = 0
     self.duration = 0
+
+    self.TR_override = TR_override
+
+    self.input_queue = Queue()
+    self.input_thread = Thread(target=input_loop, args=(self.input_queue,))
+    self.input_thread.start()
+
+    self.output_queue = Queue()
+    self.output_thread = Thread(target=output_loop, args=(self.output_queue,))
+    self.output_thread.start()
 
   def publish(self, pm):
     if LOG_MPC:
@@ -61,7 +155,25 @@ class LongitudinalMpc():
     self.cur_state[0].v_ego = v
     self.cur_state[0].a_ego = a
 
-  def update(self, CS, lead, TR_override=None):
+  def update(self, CS, lead):
+    try:
+      input_event = self.input_queue.get_nowait()
+    
+      if input_event == InputEvent.LONG_PRESS:
+        self.TR_override = 1.8 if self.TR_override is None else None
+      
+      # Output current status
+      output_event = OutputEvent.LONG_DIM if self.TR_override is None else OutputEvent.SHORT_DIM
+      try:
+        self.output_queue.put_nowait(output_event)
+      except Full:
+        log_f = open('/data/openpilot-patch/mpc_update_log.txt', 'a')
+        log_f.write(f"{datetime.now()} Output queue is full\n")
+        log_f.flush()
+        subprocess.Popen(['python', '/data/openpilot-patch/util/error.py'])
+    except TimeoutError:
+      pass
+
     v_ego = CS.vEgo
 
     # Setup current mpc state
@@ -96,8 +208,8 @@ class LongitudinalMpc():
       a_lead = 0.0
       self.a_lead_tau = _LEAD_ACCEL_TAU
 
-    if TR_override:
-      TR = TR_override
+    if self.TR_override:
+      TR = self.TR_override
     else:
       TR = self.dynamic_follow.update(CS, self.libmpc)  # update dynamic follow
 
