@@ -49,13 +49,10 @@ def input_loop(input_queue):
       elif not is_pressed and new_is_pressed:
         pass
       elif is_pressed and not new_is_pressed:
-        # TODO: remove inline dims
         if short_press_range[0] <= time_in_state <= short_press_range[1]:
           input_queue.put(InputEvent.SHORT_PRESS)
-          dim(1.0)
         elif long_press_range[0] <= time_in_state <= long_press_range[1]:
           input_queue.put(InputEvent.LONG_PRESS)
-          dim(3.0)
       else: # Two pressed or two depressed events in a row
         log_f.write(f"{datetime.now()} is_pressed:{is_pressed} new_is_pressed:{new_is_pressed} duration:{time_in_state}\n")
         log_f.flush()
