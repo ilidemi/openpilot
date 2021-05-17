@@ -63,7 +63,7 @@ def run_following_distance_simulation(TR_override, v_lead, t_end=200.0):
   v_cruise_setpoint = v_lead + 10.
 
   pm = FakePubMaster()
-  mpc = LongitudinalMpc(1)
+  mpc = LongitudinalMpc(1, TR_override)
 
   datapoints = [{'t': t, 'x_ego': x_ego, 'x_lead': lead_pos.x}]
 
@@ -93,9 +93,9 @@ def run_following_distance_simulation(TR_override, v_lead, t_end=200.0):
     mpc.set_cur_state(v_ego, a_ego)
     if first:  # Make sure MPC is converged on first timestep
       for _ in range(20):
-        mpc.update(CS.carState, lead, TR_override)
+        mpc.update(CS.carState, lead)
         mpc.publish(pm)
-    mpc.update(CS.carState, lead, TR_override)
+    mpc.update(CS.carState, lead)
     mpc.publish(pm)
 
     # Choose slowest of two solutions
