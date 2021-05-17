@@ -3,7 +3,7 @@ from enum import Enum
 import os
 import math
 from threading import Thread
-from queue import Full, Queue
+from queue import Empty, Full, Queue
 import struct
 import subprocess
 import time
@@ -27,6 +27,10 @@ class InputEvent(Enum):
 def input_loop(input_queue):
   log_f = open('/data/openpilot-patch/input_log.txt', 'a')
 
+  def input_log(message):
+    log_f.write(f"{datetime.now()} {message}\n")
+    log_f.flush()
+
   try:
     button_file = open('/dev/input/event0', 'rb')
     is_pressed = None
@@ -45,22 +49,24 @@ def input_loop(input_queue):
       new_is_pressed = button_fields[6] == 1
 
       if is_pressed is None:
-        pass
+        input_log("First state change")
       elif not is_pressed and new_is_pressed:
-        pass
+        input_log("Press started")
       elif is_pressed and not new_is_pressed:
         if short_press_range[0] <= time_in_state <= short_press_range[1]:
+          input_log(f"Short press finished: {time_in_state}")
           input_queue.put(InputEvent.SHORT_PRESS)
         elif long_press_range[0] <= time_in_state <= long_press_range[1]:
+          input_log(f"Long press finished: {time_in_state}")
           input_queue.put(InputEvent.LONG_PRESS)
+        else:
+          input_log("Unknown press finished")
       else: # Two pressed or two depressed events in a row
-        log_f.write(f"{datetime.now()} is_pressed:{is_pressed} new_is_pressed:{new_is_pressed} duration:{time_in_state}\n")
-        log_f.flush()
+        input_log(f"Some press inconsistency - is_pressed:{is_pressed} new_is_pressed:{new_is_pressed} duration:{time_in_state}")
       is_pressed = new_is_pressed
       state_change_time = new_state_change_time
   except Exception as e:
-    log_f.write(f"{datetime.now()} Input loop exception: {e}\n")
-    log_f.flush()
+    input_log(f"Input loop exception: {e}")
     subprocess.Popen(['python', '/data/openpilot-patch/util/error.py'])
 
 
@@ -80,16 +86,21 @@ def dim(duration):
 def output_loop(output_queue):
   log_f = open('/data/openpilot-patch/output_log.txt', 'a')
 
+  def output_log(message):
+    log_f.write(f"{datetime.now()} {message}\n")
+    log_f.flush()
+
   try:
     while True:
       output_event = output_queue.get(block=True)
       if output_event == OutputEvent.SHORT_DIM:
+        output_log("Dim for 1s")
         dim(1.0)
       elif output_event == OutputEvent.LONG_DIM:
+        output_log("Dim for 3s")
         dim(3.0)
   except Exception as e:
-    log_f.write(f"{datetime.now()} Output loop exception: {e}\n")
-    log_f.flush()
+    output_log(f"Output loop exception: {e}\n")
     subprocess.Popen(['python', '/data/openpilot-patch/util/error.py'])
 
 
@@ -169,6 +180,8 @@ class LongitudinalMpc():
         log_f.flush()
         subprocess.Popen(['python', '/data/openpilot-patch/util/error.py'])
     except TimeoutError:
+      pass
+    except Empty:
       pass
 
     v_ego = CS.vEgo
